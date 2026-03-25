@@ -1,0 +1,11 @@
+[dataset]
+num_samples = 1000
+output_dir = "data/cap_pretrain"
+num_images = 1
+num_turns = 1
+interleaved = false
+
+[image]
+resolution_type = "fixed"
+width = 224
+height = 224

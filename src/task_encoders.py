@@ -1,9 +1,11 @@
 import torch
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from transformers import AutoProcessor
-from megatron.energon import TaskEncoder, stateless
+from megatron.energon import TaskEncoder, stateless, InterleavedSample
 import numpy as np
+from PIL import Image
+import io
 
 @dataclass
 class EncodedSample:
@@ -14,7 +16,7 @@ class EncodedSample:
 
 class VQABaseTaskEncoder(TaskEncoder):
     """Base class for VQA task encoders providing visualization metadata."""
-    def __init__(self, model_id: str, max_length: int = 1024):
+    def __init__(self, model_id: str, max_length: int = 2048):
         self.model_id = model_id
         self.max_length = max_length
         self.processor = AutoProcessor.from_pretrained(model_id)
@@ -75,38 +77,51 @@ class VQABaseTaskEncoder(TaskEncoder):
                     
         return cat_matrix
 
-class StandardVQATaskEncoder(VQABaseTaskEncoder):
-    """Simple non-packing VQA encoder."""
-    @property
-    def packing_buffer_size(self):
-        return None
-
-    def encode_sample(self, sample):
-        messages = [
-            {"role": "user", "content": [{"type": "image", "image": sample.image}, {"type": "text", "text": sample.context.replace("<image>\n", "")}]},
-            {"role": "assistant", "content": [{"type": "text", "text": sample.answers}]}
-        ]
-        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-        inputs = self.processor(text=[text], images=[sample.image], padding="max_length", max_length=self.max_length, truncation=True, return_tensors="pt")
-        return {
-            "input_ids": inputs["input_ids"][0],
-            "attention_mask": inputs["attention_mask"][0],
-        }
-
-class PackingVQATaskEncoder(VQABaseTaskEncoder):
-    """Packing-enabled VQA encoder."""
+class MultimodalTaskEncoder(VQABaseTaskEncoder):
+    """InterleavedSample encoder with DATA PACKING"""
     @property
     def packing_buffer_size(self):
         return 100
 
+    def _prepare_messages(self, sample: InterleavedSample):
+        messages = []
+        images = []
+        current_role = None
+        current_content = []
+        
+        for part in getattr(sample, 'sequence', []):
+            if isinstance(part, dict):
+                role = part['role']
+                text = part['text']
+                
+                if role != current_role:
+                    if current_role is not None:
+                        messages.append({"role": current_role, "content": current_content})
+                        current_content = []
+                    current_role = role
+                
+                current_content.append({"type": "text", "text": text})
+            else:
+                if isinstance(part, bytes):
+                    part = Image.open(io.BytesIO(part))
+                images.append(part)
+                current_content.append({"type": "image", "image": part})
+        
+        if current_role is not None:
+            messages.append({"role": current_role, "content": current_content})
+            
+        return messages, images
+
     @stateless(restore_seeds=True)
-    def encode_sample(self, sample) -> EncodedSample:
-        messages = [
-            {"role": "user", "content": [{"type": "image", "image": sample.image}, {"type": "text", "text": sample.context.replace("<image>\n", "")}]},
-            {"role": "assistant", "content": [{"type": "text", "text": sample.answers}]}
-        ]
+    def encode_sample(self, sample: InterleavedSample) -> EncodedSample:
+        messages, images = self._prepare_messages(sample)
+        
+        if not messages:
+            return EncodedSample(__key__=sample.__key__, input_ids=torch.zeros(1, dtype=torch.long), attention_mask=torch.zeros(1, dtype=torch.long), length=1)
+            
         text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-        inputs = self.processor(text=[text], images=[sample.image], padding=False, return_tensors="pt")
+        inputs = self.processor(text=[text], images=images, padding=False, return_tensors="pt")
+        
         return EncodedSample(
             __key__=sample.__key__,
             input_ids=inputs["input_ids"][0],

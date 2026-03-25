@@ -4,46 +4,46 @@ This project provides a synthetic data generation and packing pipeline for bench
 
 ## Project Structure
 - `src/generate.py`: Main script for synthetic dataset generation.
-- `src/task_encoders.py`: Contains `StandardVQATaskEncoder` and `PackingVQATaskEncoder` for data loading.
+- `src/task_encoders.py`: Contains the `MultimodalTaskEncoder` which supports `InterleavedSample` objects.
+- `src/add_sample_loader.py`: Utility to inject the interleaved sample loader into Energon metadata.
 - `src/viz_synthetic.py`: Data-agnostic visualization tool for batch/token inspection.
-- `configs/`: TOML configuration files for dataset generation parameters.
-- `data/`: Location where generated datasets (WebDataset shards and Energon metadata) are stored.
+- `configs/`: TOML configuration files for dataset generation.
+- `data/`: Storage for generated datasets.
 
-## Usage Guide
+## Workflow (Transparency-Focused)
 
-### 1. Generating Synthetic Datasets
-Generate shards with fixed or varying resolutions:
+To ensure full control and transparency over the dataset preparation process, we follow a 3-step manual workflow instead of using opaque wrappers around the Energon CLI.
+
+### 1. Generate Synthetic Datasets
+Generate shards with multiturn conversations and interleaved images using your chosen configuration:
 ```bash
-uv run python src/generate.py configs/dataset_standard.toml configs/dataset_varying.toml
+uv run python src/generate.py configs/dataset_interleaved.toml
 ```
 
-### 2. Preparing for Energon
-If you change the shards, you must re-index and prepare for Energon (required for the metadata and `.nv-meta` directory):
+### 2. Prepare for Energon
+Use the standard `energon prepare` command. **Crucially**, specify `--sample-type InterleavedSample` to generate the necessary metadata stubs.
 ```bash
-uv run energon prepare data/dataset_standard --non-interactive --split-ratio 0.8,0.1,0.1
-uv run energon prepare data/dataset_varying --non-interactive --split-ratio 0.8,0.1,0.1
+uv run energon prepare data/dataset_interleaved --non-interactive --split-ratio 1.0,0,0 --sample-type InterleavedSample --force-overwrite
 ```
 
-### 3. Visualizing Token Maps
-Inspect how the `TaskEncoder` batches tokens and images. This works for both standard padding and optimized packing.
-
-**Standard Padding:**
+### 3. Add the Sample Loader
+Energon generates a stub `sample_loader.py` in the `.nv-meta` directory. Use our utility script to populate it with the logic required to handle the interleaved synthetic data:
 ```bash
+uv run python src/add_sample_loader.py data/dataset_interleaved
+```
+
+## Visualization
+After preparation, you can visualize the batches to verify packing efficiency and multimodal token distribution:
+```bash
+export PYTHONPATH=$PYTHONPATH:.
 uv run python src/viz_synthetic.py \
-    --dataset data/dataset_standard \
-    --encoder-class StandardVQATaskEncoder \
-    --output visualizations/standard_viz.png
-```
-
-**Optimized Packing:**
-```bash
-uv run python src/viz_synthetic.py \
-    --dataset data/dataset_standard \
-    --encoder-class PackingVQATaskEncoder \
-    --output visualizations/packing_viz.png
+    --dataset data/dataset_interleaved \
+    --encoder-class MultimodalTaskEncoder \
+    --output visualizations/interleaved_viz.png
 ```
 
 ## Features
-- **Configurable Resolutions:** Standard (336x336) and varying (224-1024) image support.
-- **Efficient Packing:** Custom `PackingVQATaskEncoder` that groups multiple samples into a single sequence, significantly reducing padding overhead and maximizing GPU throughput.
-- **Diagnostic Tooling:** Integrated boundary markers (black pixels) in visualization to verify packing efficiency and FlashAttention-compatible `cu_seqlens`.
+- **Interleaved Multimodal Support**: Generates multiturn conversations with images placed at arbitrary points.
+- **Enforced InterleavedSample**: All datasets are configured to use the generic `InterleavedSample` type, maximizing compatibility with VLM training frameworks.
+- **Efficient Packing**: `MultimodalTaskEncoder` handles the packing of complex, variable-length interleaved sequences.
+- **Diagnostic Tooling**: High-fidelity token maps with sequence boundary markers.
