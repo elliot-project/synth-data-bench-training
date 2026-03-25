@@ -1,0 +1,16 @@
+[project]
+name = "synth-data"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.13.0",
+    "matplotlib>=3.10.8",
+    "megatron-energon>=7.3.2",
+    "pillow>=12.1.1",
+    "qwen-vl-utils>=0.0.14",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "transformers>=5.3.0",
+]
