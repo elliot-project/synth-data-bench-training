@@ -1,28 +1,18 @@
 import torch
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any, Union
-from transformers import AutoProcessor
-from megatron.energon import TaskEncoder, stateless, InterleavedSample
 import numpy as np
-from PIL import Image
-import io
+from dataclasses import dataclass
+from transformers import AutoProcessor
+from megatron.energon import DefaultTaskEncoder, stateless, CrudeSample, Cooker, TextSample, basic_sample_keys, InterleavedSample
 
-@dataclass
-class EncodedSample:
-    __key__: str
-    input_ids: torch.Tensor
-    attention_mask: torch.Tensor
-    length: int
-
-class VQABaseTaskEncoder(TaskEncoder):
+class VQABaseTaskEncoder(DefaultTaskEncoder):
     """Base class for VQA task encoders providing visualization metadata."""
-    def __init__(self, model_id: str, max_length: int = 2048):
+    def __init__(self, model_id: str = "Qwen/Qwen2-VL-2B-Instruct", max_length: int = 2048, **kwargs):
+        super().__init__(**kwargs)
         self.model_id = model_id
         self.max_length = max_length
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.tokenizer = self.processor.tokenizer
         
-        # Visualization metadata
         self.CAT_MAP = {
             "Padding": 0,
             "User Text": 1,
@@ -33,20 +23,34 @@ class VQABaseTaskEncoder(TaskEncoder):
         }
         self.COLORS = ["#ecf0f1", "#3498db", "#9b59b6", "#2ecc71", "#e74c3c", "#000000"]
         
-        # Token IDs for categorization
         self.special_ids = set(self.tokenizer.all_special_ids)
         vision_tokens = ["<|image_pad|>", "<|vision_pad|>", "<|vision_start|>", "<|vision_end|>"]
         self.vision_ids = {self.tokenizer.convert_tokens_to_ids(vt) for vt in vision_tokens if self.tokenizer.convert_tokens_to_ids(vt) is not None}
-        self.im_start_id = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
+        
+        im_start = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
+        self.im_start_id = im_start if im_start is not None else -100
 
-    def categorize(self, input_ids, attention_mask, cu_seqlens=None):
-        """Maps token IDs to category integers for visualization."""
+    def categorize(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, cu_seqlens=None) -> np.ndarray:
+        """Maps token IDs to category integers for visualization. Safely handles 1D and 2D batches."""
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+            attention_mask = attention_mask.unsqueeze(0)
+            if cu_seqlens is not None:
+                cu_seqlens = cu_seqlens.unsqueeze(0) if cu_seqlens.dim() == 1 else cu_seqlens
+
         batch_size, seq_len = input_ids.shape
         cat_matrix = np.zeros((batch_size, seq_len), dtype=int)
         
         for i in range(batch_size):
             current_role = self.CAT_MAP["User Text"]
-            boundaries = set(cu_seqlens[i].tolist()) if cu_seqlens is not None else set()
+            
+            if cu_seqlens is not None:
+                seq_b = cu_seqlens[i]
+                if isinstance(seq_b, torch.Tensor):
+                    seq_b = seq_b.tolist()
+                boundaries = set(seq_b)
+            else:
+                boundaries = set()
 
             for j in range(seq_len):
                 token_id = input_ids[i, j].item()
@@ -62,7 +66,8 @@ class VQABaseTaskEncoder(TaskEncoder):
                     continue
 
                 if token_id == self.im_start_id and j + 1 < seq_len:
-                    next_str = self.tokenizer.decode([input_ids[i, j+1].item()]).strip().lower()
+                    next_token = input_ids[i, j+1].item()
+                    next_str = self.tokenizer.decode([next_token]).strip().lower()
                     if "user" in next_str:
                         current_role = self.CAT_MAP["User Text"]
                     elif "assistant" in next_str:
@@ -77,77 +82,82 @@ class VQABaseTaskEncoder(TaskEncoder):
                     
         return cat_matrix
 
-class MultimodalTaskEncoder(VQABaseTaskEncoder):
-    """InterleavedSample encoder with DATA PACKING"""
-    @property
-    def packing_buffer_size(self):
-        return 100
 
-    def _prepare_messages(self, sample: InterleavedSample):
-        messages = []
-        images = []
-        current_role = None
-        current_content = []
-        
-        for part in getattr(sample, 'sequence', []):
-            if isinstance(part, dict):
-                role = part['role']
-                text = part['text']
-                
-                if role != current_role:
-                    if current_role is not None:
-                        messages.append({"role": current_role, "content": current_content})
-                        current_content = []
-                    current_role = role
-                
-                current_content.append({"type": "text", "text": text})
-            else:
-                if isinstance(part, bytes):
-                    part = Image.open(io.BytesIO(part))
-                images.append(part)
-                current_content.append({"type": "image", "image": part})
-        
-        if current_role is not None:
-            messages.append({"role": current_role, "content": current_content})
-            
-        return messages, images
 
-    @stateless(restore_seeds=True)
-    def encode_sample(self, sample: InterleavedSample) -> EncodedSample:
-        messages, images = self._prepare_messages(sample)
+@stateless
+def cooker_captioning(sample: dict) -> InterleavedSample:
+    role_map = {'human': 'user', 'gpt': 'assistant', 'user': 'user', 'assistant': 'assistant'}
+    
+    messages = []
+    image_added = False
+
+    for turn in sample['json']['conversations']:
+        role = role_map.get(turn.get('from', 'user'), 'user')
+        text_val = turn['value']
         
-        if not messages:
-            return EncodedSample(__key__=sample.__key__, input_ids=torch.zeros(1, dtype=torch.long), attention_mask=torch.zeros(1, dtype=torch.long), length=1)
+        content = []
+        
+        if "<image>" in text_val or (role == 'user' and not image_added):
+            content.append({"type": "image"})
+            text_val = text_val.replace("<image>", "").strip()
+            image_added = True
             
-        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-        inputs = self.processor(text=[text], images=images, padding=False, return_tensors="pt")
-        
+        if text_val:
+            content.append({"type": "text", "text": text_val})
+            
+        if not content:
+            content.append({"type": "text", "text": ""})
+            
+        messages.append({"role": role, "content": content})
+    
+    image = sample['jpg']
+
+    sequence = [
+        image,
+        messages,
+    ]
+
+    return InterleavedSample(
+        **basic_sample_keys(sample),
+        sequence=sequence,
+    )
+
+@dataclass
+class EncodedSample:
+    __key__: strc
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    length: int
+    pixel_values: torch.Tensor
+    image_grid_thw: torch.Tensor
+
+
+class SingleBatchEncoder(VQABaseTaskEncoder):
+    def __init__(self,  **kwargs):
+        super().__init__(**kwargs)
+        self._batch_type = None
+
+    cookers = [
+        # subflavors can be used to distinguish datasets when using a Metadataset
+        Cooker(cooker_captioning),
+    ]
+
+    # transform the RAW data, tokenize a single sample
+    def encode_sample(self, sample: CrudeSample) -> EncodedSample:
+        text = self.processor.apply_chat_template(sample.sequence[1], tokenize=False, add_generation_prompt=False)
+        inputs = self.processor(text=[text], images=[sample.sequence[0]], padding=False, return_tensors="pt")
+
         return EncodedSample(
             __key__=sample.__key__,
             input_ids=inputs["input_ids"][0],
             attention_mask=inputs["attention_mask"][0],
-            length=len(inputs["input_ids"][0])
+            length=len(inputs["input_ids"][0]),
+            pixel_values=inputs.get("pixel_values"),
+            image_grid_thw=inputs.get("image_grid_thw")
         )
 
-    def select_samples_to_pack(self, samples: List[EncodedSample]) -> List[List[EncodedSample]]:
-        samples.sort(key=lambda x: x.length, reverse=True)
-        groups = []
-        while samples:
-            current_group = [samples.pop(0)]
-            current_len = current_group[0].length
-            i = 0
-            while i < len(samples):
-                if current_len + samples[i].length <= self.max_length:
-                    sample = samples.pop(i)
-                    current_group.append(sample)
-                    current_len += sample.length
-                else:
-                    i += 1
-            groups.append(current_group)
-        return groups
-
-    @stateless
-    def pack_selected_samples(self, samples: List[EncodedSample]) -> Dict[str, Any]:
+    # collate the batch into a single sample
+    def batch(self, samples: list[EncodedSample]) -> dict:
         packed_input_ids = torch.cat([s.input_ids for s in samples])
         packed_attention_mask = torch.cat([s.attention_mask for s in samples])
         cu_seqlens = torch.tensor([0] + list(np.cumsum([s.length for s in samples])), dtype=torch.int32)
@@ -157,8 +167,69 @@ class MultimodalTaskEncoder(VQABaseTaskEncoder):
             packed_input_ids = torch.cat([packed_input_ids, torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=torch.long)])
             packed_attention_mask = torch.cat([packed_attention_mask, torch.zeros((pad_len,), dtype=torch.long)])
         
-        return {
+        batch_out = {
             "input_ids": packed_input_ids,
             "attention_mask": packed_attention_mask,
             "cu_seqlens": cu_seqlens,
         }
+
+        valid_pixel_values = [s.pixel_values for s in samples if s.pixel_values is not None]
+        if valid_pixel_values:
+            batch_out["pixel_values"] = torch.cat(valid_pixel_values, dim=0)
+            
+        valid_grid_thw = [s.image_grid_thw for s in samples if s.image_grid_thw is not None]
+        if valid_grid_thw:
+            batch_out["image_grid_thw"] = torch.cat(valid_grid_thw, dim=0)
+            
+        return batch_out
+
+class DataPackingEncoder(VQABaseTaskEncoder):
+    def __init__(self,  **kwargs):
+        super().__init__(**kwargs)
+        self._batch_type = None
+
+    cookers = [
+        # subflavors can be used to distinguish datasets when using a Metadataset
+        Cooker(cooker_captioning),
+    ]
+
+    # transform the RAW data, tokenize a single sample
+    def encode_sample(self, sample: CrudeSample) -> EncodedSample:
+        text = self.processor.apply_chat_template(sample.sequence[1], tokenize=False, add_generation_prompt=False)
+        inputs = self.processor(text=[text], images=[sample.sequence[0]], padding=False, return_tensors="pt")
+
+        return EncodedSample(
+            __key__=sample.__key__,
+            input_ids=inputs["input_ids"][0],
+            attention_mask=inputs["attention_mask"][0],
+            length=len(inputs["input_ids"][0]),
+            pixel_values=inputs.get("pixel_values"),
+            image_grid_thw=inputs.get("image_grid_thw")
+        )
+
+    # collate the batch into a single sample
+    def batch(self, samples: list[EncodedSample]) -> dict:
+        packed_input_ids = torch.cat([s.input_ids for s in samples])
+        packed_attention_mask = torch.cat([s.attention_mask for s in samples])
+        cu_seqlens = torch.tensor([0] + list(np.cumsum([s.length for s in samples])), dtype=torch.int32)
+        
+        pad_len = self.max_length - packed_input_ids.size(0)
+        if pad_len > 0:
+            packed_input_ids = torch.cat([packed_input_ids, torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=torch.long)])
+            packed_attention_mask = torch.cat([packed_attention_mask, torch.zeros((pad_len,), dtype=torch.long)])
+        
+        batch_out = {
+            "input_ids": packed_input_ids,
+            "attention_mask": packed_attention_mask,
+            "cu_seqlens": cu_seqlens,
+        }
+
+        valid_pixel_values = [s.pixel_values for s in samples if s.pixel_values is not None]
+        if valid_pixel_values:
+            batch_out["pixel_values"] = torch.cat(valid_pixel_values, dim=0)
+            
+        valid_grid_thw = [s.image_grid_thw for s in samples if s.image_grid_thw is not None]
+        if valid_grid_thw:
+            batch_out["image_grid_thw"] = torch.cat(valid_grid_thw, dim=0)
+            
+        return batch_out

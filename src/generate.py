@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import uuid
 import random
 import io
 import json
@@ -80,7 +81,7 @@ def generate_dataset(config_path):
                 conversations.append({"from": "gpt", "value": gpt_text})
             
             metadata = {
-                "id": f"sample_{i:08d}",
+                "id": str(uuid.uuid4()),
                 "conversations": conversations,
             }
             

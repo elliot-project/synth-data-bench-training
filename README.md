@@ -18,13 +18,14 @@ The datapacking and energon implementation is mostly used to visualize the data,
 - `src/add_sample_loader.py`: Utility to inject the interleaved sample loader into Energon metadata.
 - `src/viz_synthetic.py`: Data-agnostic visualization tool for batch/token inspection.
 - `configs/`: TOML configuration files for dataset generation.
-- `data/`: Storage for generated datasets.
+- `examples/`: Other example files.
 
 I already added some configurations to reflect different types of dataset.
 
 ## Workflow
 
-To ensure full control and transparency over the dataset preparation process, we follow a 3-step manual workflow instead of using opaque wrappers around the Energon CLI. I didnt want to wrapper the dataset generation process under a sigle command.
+By using `CrudeSample`s with Energon, we can use custom dataloading processes without modifying the files created by `energon prepare`. Using Energon's Cookers as seen in `src/task_encoders.py` we can handle multi-turn or interleaved datasets without any issue.
+
 
 ### 1. Generate Synthetic Datasets
 Generate shards with multiturn conversations and interleaved images using your chosen configuration:
@@ -35,13 +36,7 @@ uv run python src/generate.py configs/dataset_interleaved.toml
 ### 2. Prepare for Energon
 Use the standard `energon prepare` command. **Crucially**, specify `--sample-type InterleavedSample` to generate the necessary metadata stubs.
 ```bash
-uv run energon prepare data/dataset_interleaved --non-interactive --split-ratio 1.0,0,0 --sample-type InterleavedSample --force-overwrite
-```
-
-### 3. Add the Sample Loader
-Energon generates a stub `sample_loader.py` in the `.nv-meta` directory. Use our utility script to populate it with the logic required to handle the interleaved synthetic data:
-```bash
-uv run python src/add_sample_loader.py data/dataset_interleaved
+uv run energon prepare data/dataset_interleaved --non-interactive --split-ratio 1.0,0,0 --sample-type CrudeSample --force-overwrite
 ```
 
 ## Visualization
