@@ -40,7 +40,7 @@ uv run python src/generate.py configs/interleaved.toml
 ### 2. Prepare for Energon
 Before using the dataset with Energon, you must prepare the metadata:
 ```bash
-uv run energon prepare data/vqa --non-interactive --split-ratio 1.0,0,0 --sample-type CrudeSample --force-overwrite
+uv run energon prepare data/vqa --non-interactive --split-ratio 1.0,0,0 --sample-type CrudeWebdataset
 ```
 *Note: We use `CrudeSample` to keep the raw data accessible to our custom Cookers.*
 
