@@ -1,58 +1,68 @@
 # Synthetic Multimodal WebDatasets for Benchmarking
 
-This project provides a synthetic data generation and packing pipeline for benchmarking large-scale training frameworks (VLM) using `megatron-energon` and `webdataset`.
-It can be used as an starting point into dataset formatting and to showcase the basic usage of the Megatron-Energon dataloader.
+This repository provides a pipeline for generating synthetic multimodal datasets and packing them using `megatron-energon` and `webdataset`. It is designed as a starting point for VLM (Vision-Language Model) training frameworks, demonstrating how to handle interleaved images, multi-turn conversations, and efficient data packing.
 
 > Contact: `tockier@cvc.uab.cat` (Computer Vision Center)
 
-## Purpose
-The purpose of this repo is to two-fold:
-- **Generation of synthetic datasets to test training/dataloading pipelines.**
-- Showcase of simple data packing strategies with Megatron-Energon
-
-The datapacking and energon implementation is mostly used to visualize the data, in practice more sofisticated data-packing strategies should be used.
+## Features
+- **Synthetic Generation**: Generate massive datasets with randomized text (Lorem Ipsum) and random images (Gaussian noise).
+- **Multimodal Support**: Support for captioning (1 image), VQA (multiple turns), and interleaved data (multiple images per sample).
+- **Megatron-Energon Integration**: Ready-to-use `TaskEncoder` and `Cookers` for `megatron-energon`.
+- **Data Packing**: Demonstrates how to pack multiple variable-length samples into a single fixed-length sequence using `cu_seqlens`.
+- **Diagnostic Tools**: High-fidelity visualization of token distributions and decoded text in packed batches.
 
 ## Project Structure
 - `src/generate.py`: Main script for synthetic dataset generation.
-- `src/task_encoders.py`: Contains the `MultimodalTaskEncoder` which supports `InterleavedSample` objects.
-- `src/add_sample_loader.py`: Utility to inject the interleaved sample loader into Energon metadata.
-- `src/viz_synthetic.py`: Data-agnostic visualization tool for batch/token inspection.
-- `configs/`: TOML configuration files for dataset generation.
-- `examples/`: Other example files.
+- `src/task_encoders.py`: Contains `TaskEncoder` implementations and `Cookers`.
+- `src/viz_synthetic.py`: Visualizes token distributions (image vs. text vs. padding).
+- `src/viz_text.py`: Decodes and prints the text within packed batches.
+- `configs/`: TOML configuration files for various dataset types (Captioning, VQA, Interleaved).
+- `ENERGON_DOCS.md`: Detailed documentation on Energon integration.
 
-I already added some configurations to reflect different types of dataset.
+## Installation
+This project uses `uv` for dependency management. To set up the environment:
+```bash
+uv sync
+```
 
 ## Workflow
 
-By using `CrudeSample`s with Energon, we can use custom dataloading processes without modifying the files created by `energon prepare`. Using Energon's Cookers as seen in `src/task_encoders.py` we can handle multi-turn or interleaved datasets without any issue.
-
-
 ### 1. Generate Synthetic Datasets
-Generate shards with multiturn conversations and interleaved images using your chosen configuration:
+Use the provided configurations or create your own to generate `WebDataset` shards:
 ```bash
-uv run python src/generate.py configs/dataset_interleaved.toml
+# Generate a simple VQA dataset
+uv run python src/generate.py configs/vqa.toml
+
+# Generate an interleaved dataset with multiple images
+uv run python src/generate.py configs/interleaved.toml
 ```
 
 ### 2. Prepare for Energon
-Use the standard `energon prepare` command. **Crucially**, specify `--sample-type InterleavedSample` to generate the necessary metadata stubs.
+Before using the dataset with Energon, you must prepare the metadata:
 ```bash
-uv run energon prepare data/dataset_interleaved --non-interactive --split-ratio 1.0,0,0 --sample-type CrudeSample --force-overwrite
+uv run energon prepare data/vqa --non-interactive --split-ratio 1.0,0,0 --sample-type CrudeSample --force-overwrite
 ```
+*Note: We use `CrudeSample` to keep the raw data accessible to our custom Cookers.*
 
-## Visualization
-After preparation, you can visualize the batches to verify packing efficiency and multimodal token distribution:
+### 3. Visualization and Inspection
+Verify that the data is being loaded and packed correctly.
+
+#### Token Distribution Map
+Visualize how User Text, Assistant Text, Images, and Padding are distributed in a batch:
 ```bash
 uv run python src/viz_synthetic.py \
-    --dataset data/dataset_interleaved \
-    --encoder-class MultimodalTaskEncoder \
-    --output visualizations/interleaved_viz.png
+    --dataset data/vqa \
+    --encoder-class DataPackingEncoder \
+    --output visualizations/vqa_tokens.png
 ```
 
-## Features
-- **Interleaved Multimodal Support**: Generates multiturn conversations with images placed at arbitrary points.
-- **Enforced InterleavedSample**: All datasets are configured to use the generic `InterleavedSample` type, maximizing compatibility with VLM training frameworks.
-- **Efficient Packing**: `MultimodalTaskEncoder` handles the packing of complex, variable-length interleaved sequences.
-- **Diagnostic Tooling**: High-fidelity token maps with sequence boundary markers.
+#### Text Inspector
+Decode the actual text being fed to the model:
+```bash
+uv run python src/viz_text.py \
+    --dataset data/vqa \
+    --encoder-class DataPackingEncoder
+```
 
 ## Examples
 
@@ -64,3 +74,8 @@ VQA dataset with multiple user-assistant turns:
 
 Interleaved dataset with multiple images in the same sample:
 <img width="4174" height="1166" alt="interleaved" src="https://github.com/user-attachments/assets/ea5fbf3b-8e54-478f-9feb-b6902603163f" />
+
+## Contributing
+For more details on how to extend the `TaskEncoder` or add new `Cookers`, please refer to [ENERGON_DOCS.md](ENERGON_DOCS.md).
+
+**Feel free to create any issues or PRs.**
