@@ -152,6 +152,7 @@ class DataPackingEncoder(VQABaseTaskEncoder):
     ]
 
     # transform the RAW data, tokenize a single sample
+    @stateless(restore_seeds=True)
     def encode_sample(self, sample: EnergonSample) -> EncodedSample:
         text = self.processor.apply_chat_template(sample.messages, tokenize=False, add_generation_prompt=False)
         inputs = self.processor(text=[text], images=[sample.image], padding=False, return_tensors="pt")
@@ -165,8 +166,26 @@ class DataPackingEncoder(VQABaseTaskEncoder):
             image_grid_thw=inputs.get("image_grid_thw")
         )
 
+    def select_samples_to_pack(self, samples: list[EncodedSample]) -> list[list[EncodedSample]]:
+        samples.sort(key=lambda x: x.length, reverse=True)
+        groups = []
+        while samples:
+            current_group = [samples.pop(0)]
+            current_len = current_group[0].length
+            i = 0
+            while i < len(samples):
+                if current_len + samples[i].length <= self.max_length:
+                    sample = samples.pop(i)
+                    current_group.append(sample)
+                    current_len += sample.length
+                else:
+                    i += 1
+            groups.append(current_group)
+        return groups
+
     # collate the batch into a single sample
-    def batch(self, samples: list[EncodedSample]) -> dict:
+    @stateless
+    def pack_selected_samples(self, samples: list[EncodedSample]) -> dict:
         packed_input_ids = torch.cat([s.input_ids for s in samples])
         packed_attention_mask = torch.cat([s.attention_mask for s in samples])
         cu_seqlens = torch.tensor([0] + list(np.cumsum([s.length for s in samples])), dtype=torch.int32)

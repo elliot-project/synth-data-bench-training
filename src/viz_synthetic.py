@@ -1,3 +1,4 @@
+from task_encoders import DataPackingEncoder
 import os
 import torch
 import numpy as np
@@ -32,19 +33,14 @@ def main():
     parser = argparse.ArgumentParser(description="Data-agnostic Energon Visualization.")
     parser.add_argument("--dataset", type=str, required=True, help="Path to Energon dataset.")
     parser.add_argument("--encoder-module", type=str, default="task_encoders", help="Module containing the TaskEncoder.")
-    parser.add_argument("--encoder-class", type=str, required=True, help="TaskEncoder class name.")
     parser.add_argument("--model-id", type=str, default="Qwen/Qwen2-VL-2B-Instruct", help="Model ID for the encoder.")
     parser.add_argument("--max-length", type=int, default=1024, help="Max sequence length.")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size.")
     parser.add_argument("--output", type=str, default="token_map.png", help="Output filename.")
     args = parser.parse_args()
 
-    # Dynamic loading of the TaskEncoder
-    module = importlib.import_module(args.encoder_module)
-    encoder_cls = getattr(module, args.encoder_class)
-    encoder = encoder_cls(model_id=args.model_id, max_length=args.max_length)
+    encoder = DataPackingEncoder()
 
-    print(f"Using {args.encoder_class} from {args.encoder_module}")
     print(f"Loading dataset from {args.dataset}...")
     
     dataset = get_train_dataset(
@@ -54,7 +50,7 @@ def main():
         batch_size=args.batch_size,
         shuffle_buffer_size=10,
         max_samples_per_sequence=None,
-        packing_buffer_size=getattr(encoder, "packing_buffer_size", None)
+        packing_buffer_size=32,
     )
     loader = get_loader(dataset)
 
@@ -68,7 +64,7 @@ def main():
         batch.get('cu_seqlens')
     )
     
-    title = f"{args.encoder_class} | {args.model_id} | {args.dataset}"
+    title = f"{args.model_id} | {args.dataset}"
     plot_token_map(matrix, encoder.COLORS, encoder.CAT_MAP, args.output, title)
 
 if __name__ == "__main__":
