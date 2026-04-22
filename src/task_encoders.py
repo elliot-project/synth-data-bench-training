@@ -124,7 +124,7 @@ def cooker_captioning(sample: dict) -> InterleavedSample:
 
 @dataclass
 class EncodedSample:
-    __key__: strc
+    __key__: str
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     length: int
