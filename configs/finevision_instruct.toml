@@ -12,9 +12,9 @@ sigma_log = 0.55
 ar_sigma  = 0.30    # ~68 % of images between 0.74:1 and 1.35:1
 min_res   = 224
 max_res   = 2048
-round_to  = 32      # snap to Qwen3-VL patch grid → reproduces 448/672/1344 clusters
+round_to  = 32
 
 [text]
-mu_log_assistant    = 4.9345   # ln(139)
+mu_log_assistant    = 4.9345   # ln(139) - median ~ 139 toks
 sigma_log_assistant = 1.524
 chars_per_token     = 4.0
