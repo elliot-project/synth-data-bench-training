@@ -1,0 +1,20 @@
+[dataset]
+num_samples = 10000
+output_dir = "/data/151-1/datasets/synth_test_datasets/finevision_instruct"
+num_images_weights = [85, 10, 5]
+num_turns = 3
+interleaved = false
+
+[image]
+resolution_type = "lognormal"
+mu_log    = 6.5093  # ln(672) — median side ~ 672 px
+sigma_log = 0.55
+ar_sigma  = 0.30    # ~68 % of images between 0.74:1 and 1.35:1
+min_res   = 224
+max_res   = 2048
+round_to  = 32      # snap to Qwen3-VL patch grid → reproduces 448/672/1344 clusters
+
+[text]
+mu_log_assistant    = 4.9345   # ln(139)
+sigma_log_assistant = 1.524
+chars_per_token     = 4.0
